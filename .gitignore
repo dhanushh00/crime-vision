@@ -1,0 +1,12 @@
+# Backend
+api/venv/
+api/__pycache__/
+api/.env
+
+# Frontend
+frontend/node_modules/
+frontend/.env.local
+frontend/.next/
+
+# OS Files
+.DS_Store
