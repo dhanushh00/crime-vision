@@ -1,7 +1,15 @@
 import boto3
 import os
+import sys
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
+
+# Ensure UTF-8 output encoding on Windows terminals
+if sys.stdout.encoding != 'utf-8':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except AttributeError:
+        pass
 
 # Load environment variables from .env file
 load_dotenv()
