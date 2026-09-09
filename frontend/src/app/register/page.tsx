@@ -1,6 +1,7 @@
 "use client";
 import React, { useState } from "react";
 import { UploadCloud } from "lucide-react";
+import { getApiUrl } from "../../lib/api";
 
 export default function RegisterPage() {
   const [loading, setLoading] = useState(false);
@@ -14,7 +15,7 @@ export default function RegisterPage() {
     const formData = new FormData(e.currentTarget);
 
     try {
-      const response = await fetch("http://127.0.0.1:8000/api/register", {
+      const response = await fetch(`${getApiUrl()}/api/register`, {
         method: "POST",
         body: formData,
       });

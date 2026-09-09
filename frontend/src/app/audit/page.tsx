@@ -1,6 +1,7 @@
 "use client";
 import React, { useEffect, useState } from "react";
 import { History, Download, Trash2, Search, Filter, ShieldAlert, CheckCircle } from "lucide-react";
+import { getApiUrl } from "../../lib/api";
 
 interface AuditLog {
   id: string;
@@ -22,7 +23,7 @@ export default function AuditLogsPage() {
   const fetchLogs = async () => {
     setLoading(true);
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/audit-logs");
+      const res = await fetch(`${getApiUrl()}/api/audit-logs`);
       const data = await res.json();
       setLogs(data.logs || []);
     } catch (err) {
@@ -39,7 +40,7 @@ export default function AuditLogsPage() {
   const clearLogs = async () => {
     if (!confirm("Are you sure you want to clear the audit history?")) return;
     try {
-      await fetch("http://127.0.0.1:8000/api/audit-logs", { method: "DELETE" });
+      await fetch(`${getApiUrl()}/api/audit-logs`, { method: "DELETE" });
       setLogs([]);
     } catch (err) {
       console.error("Error clearing logs:", err);

@@ -2,6 +2,7 @@
 import React, { useEffect, useState } from "react";
 import { Users, ShieldAlert, Image as ImageIcon, Calendar, Tag, Trash2 } from "lucide-react";
 import Link from "next/link";
+import { getApiUrl } from "../../lib/api";
 
 interface Suspect {
   RekognitionId: string;
@@ -20,7 +21,7 @@ export default function SuspectsGalleryPage() {
 
   const fetchSuspects = async () => {
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/suspects");
+      const res = await fetch(`${getApiUrl()}/api/suspects`);
       const data = await res.json();
       setSuspects(data.suspects || []);
     } catch (err) {
@@ -41,7 +42,7 @@ export default function SuspectsGalleryPage() {
 
     setDeletingId(rekognitionId);
     try {
-      const res = await fetch(`http://127.0.0.1:8000/api/suspects/${rekognitionId}`, {
+      const res = await fetch(`${getApiUrl()}/api/suspects/${rekognitionId}`, {
         method: "DELETE",
       });
       if (res.ok) {

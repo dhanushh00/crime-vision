@@ -3,6 +3,8 @@ import React, { useRef, useState, useCallback } from "react";
 import Webcam from "react-webcam";
 import { ScanFace, AlertTriangle, CheckCircle, Camera, Upload, RotateCcw, ShieldAlert, UserCheck } from "lucide-react";
 
+import { getApiUrl } from "../lib/api";
+
 export default function ScannerPage() {
   const webcamRef = useRef<Webcam>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -32,7 +34,7 @@ export default function ScannerPage() {
     formData.append("file", file);
 
     try {
-      const response = await fetch("http://127.0.0.1:8000/api/recognize", {
+      const response = await fetch(`${getApiUrl()}/api/recognize`, {
         method: "POST",
         body: formData,
       });
