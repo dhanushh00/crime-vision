@@ -2,6 +2,7 @@
 api/venv/
 api/__pycache__/
 api/.env
+api/audit_logs.json
 
 # Frontend
 frontend/node_modules/
