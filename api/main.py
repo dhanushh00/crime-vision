@@ -222,6 +222,48 @@ def list_suspects():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.delete("/api/suspects/{rekognition_id}")
+def delete_suspect(rekognition_id: str):
+    """
+    Deletes a suspect across all 3 cloud layers:
+    1. DynamoDB: Removes the metadata record.
+    2. Rekognition: Removes the facial vector from the collection.
+    3. S3: Deletes the mugshot image object.
+    """
+    try:
+        # 1. Fetch item to get S3Key and Name
+        res = table.get_item(Key={'RekognitionId': rekognition_id})
+        item = res.get('Item')
+        
+        s3_key = item.get('S3Key') if item else None
+        fullname = item.get('FullName', 'Suspect') if item else 'Suspect'
+        
+        # 2. Delete from DynamoDB
+        table.delete_item(Key={'RekognitionId': rekognition_id})
+        
+        # 3. Delete facial vector from Rekognition
+        try:
+            rekognition.delete_faces(
+                CollectionId=COLLECTION_ID,
+                FaceIds=[rekognition_id]
+            )
+        except Exception as e:
+            print(f"Notice: Rekognition vector delete warning: {e}")
+            
+        # 4. Delete mugshot photo from S3
+        if s3_key:
+            try:
+                s3_client.delete_object(Bucket=BUCKET_NAME, Key=s3_key)
+            except Exception as e:
+                print(f"Notice: S3 image delete warning: {e}")
+                
+        return {
+            "status": "success",
+            "message": f"Successfully deleted {fullname} from DynamoDB, Rekognition, and S3."
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.delete("/api/audit-logs")
 def clear_audit_logs():
     """Clears the surveillance scan audit logs."""
@@ -230,4 +272,4 @@ def clear_audit_logs():
             json.dump([], f)
         return {"status": "success", "message": "Audit logs cleared."}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))

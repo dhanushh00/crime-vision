@@ -205,6 +205,7 @@ npm run dev
 | `POST` | `/api/recognize` | Analyzes image bytes, detects face, searches Rekognition, returns metadata & presigned mugshot URL |
 | `POST` | `/api/register` | Stores mugshot in S3, indexes face vector in Rekognition, and persists profile in DynamoDB |
 | `GET` | `/api/suspects` | Retrieves all registered suspect profiles with temporary S3 presigned URLs |
+| `DELETE`| `/api/suspects/{rekognition_id}` | Permanently purges suspect from DynamoDB, Rekognition vector collection, and S3 vault |
 | `GET` | `/api/audit-logs` | Fetches historical scan events for surveillance auditing |
 | `DELETE`| `/api/audit-logs` | Clears local audit history |
 | `GET` | `/api/health` | Service health status and active AWS region |

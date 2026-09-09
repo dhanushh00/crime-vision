@@ -1,6 +1,6 @@
 "use client";
 import React, { useEffect, useState } from "react";
-import { Users, ShieldAlert, Image as ImageIcon, Calendar, Tag } from "lucide-react";
+import { Users, ShieldAlert, Image as ImageIcon, Calendar, Tag, Trash2 } from "lucide-react";
 import Link from "next/link";
 
 interface Suspect {
@@ -16,21 +16,46 @@ interface Suspect {
 export default function SuspectsGalleryPage() {
   const [suspects, setSuspects] = useState<Suspect[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  const fetchSuspects = async () => {
+    try {
+      const res = await fetch("http://127.0.0.1:8000/api/suspects");
+      const data = await res.json();
+      setSuspects(data.suspects || []);
+    } catch (err) {
+      console.error("Error fetching suspects:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchSuspects = async () => {
-      try {
-        const res = await fetch("http://127.0.0.1:8000/api/suspects");
-        const data = await res.json();
-        setSuspects(data.suspects || []);
-      } catch (err) {
-        console.error("Error fetching suspects:", err);
-      } finally {
-        setLoading(false);
-      }
-    };
     fetchSuspects();
   }, []);
+
+  const handleDelete = async (rekognitionId: string, fullName: string) => {
+    if (!confirm(`Are you sure you want to permanently purge ${fullName} from DynamoDB, Rekognition, and S3?`)) {
+      return;
+    }
+
+    setDeletingId(rekognitionId);
+    try {
+      const res = await fetch(`http://127.0.0.1:8000/api/suspects/${rekognitionId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        setSuspects((prev) => prev.filter((s) => s.RekognitionId !== rekognitionId));
+      } else {
+        alert("Failed to delete suspect from cloud.");
+      }
+    } catch (err) {
+      console.error("Error deleting suspect:", err);
+      alert("Failed to connect to server.");
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-6 mt-4">
@@ -99,9 +124,19 @@ export default function SuspectsGalleryPage() {
               {/* Suspect Info */}
               <div className="p-4 flex-1 flex flex-col justify-between">
                 <div>
-                  <h3 className="font-bold text-lg text-white group-hover:text-red-400 transition">
-                    {suspect.FullName}
-                  </h3>
+                  <div className="flex items-start justify-between gap-2">
+                    <h3 className="font-bold text-lg text-white group-hover:text-red-400 transition">
+                      {suspect.FullName}
+                    </h3>
+                    <button
+                      onClick={() => handleDelete(suspect.RekognitionId, suspect.FullName)}
+                      disabled={deletingId === suspect.RekognitionId}
+                      title="Delete Suspect from Cloud"
+                      className="text-gray-500 hover:text-red-400 p-1 rounded hover:bg-gray-800 transition disabled:opacity-50"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
                   <p className="text-xs text-gray-400 mt-1 flex items-center gap-1">
                     <Tag size={12} className="text-red-500" /> {suspect.CrimeType}
                   </p>
