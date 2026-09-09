@@ -11,6 +11,101 @@
 
 ---
 
+## 🏗️ Detailed System Architecture
+
+CrimeVision is engineered using a decoupled, event-driven cloud architecture that strictly separates **biometric vector computation** from **relational identity metadata**.
+
+```mermaid
+flowchart TD
+    subgraph Clients ["Presentation Tier (Next.js 16 + React 19)"]
+        UI_Scan["📷 Live Biometric Scanner (Webcam / Upload)"]
+        UI_Reg["➕ Suspect Registration Portal"]
+        UI_Audit["📜 Audit Log & CSV Exporter"]
+        UI_DB["🗄️ Suspect Gallery & Record Vault"]
+    end
+
+    subgraph Gateway ["Application & API Tier (FastAPI)"]
+        API["FastAPI REST Controller"]
+        AuditEngine["Surveillance Audit Engine"]
+        Signer["S3 Presigned URL Signer"]
+    end
+
+    subgraph AWS_Cloud ["Cloud Infrastructure Tier (Amazon Web Services)"]
+        subgraph Storage ["Object & Metadata Storage"]
+            S3[("Amazon S3 Vault\n(Encrypted Private Bucket)")]
+            DDB[("Amazon DynamoDB\n(criminal_records Table)")]
+        end
+
+        subgraph Serverless ["Event-Driven Compute & AI"]
+            Lambda["AWS Lambda Worker\n(Face Indexer Function)"]
+            Rekognition{{"Amazon Rekognition\n(Biometric Vector Collection)"}}
+        end
+    end
+
+    %% Ingestion Pipeline
+    UI_Reg -->|"1. Submit Mugshot + Profile"| API
+    API -->|"2. Direct PutObject with Headers"| S3
+    API -->|"3. Instant IndexFaces Fallback"| Rekognition
+    API -->|"4. Store Profile Record"| DDB
+    S3 -.->|"Event: s3:ObjectCreated:*"| Lambda
+    Lambda -->|"Async IndexFaces"| Rekognition
+    Lambda -->|"Sync PutItem"| DDB
+
+    %% Real-Time Identification Pipeline
+    UI_Scan -->|"A. Stream Frame Bytes"| API
+    API -->|"B. SearchFacesByImage"| Rekognition
+    Rekognition -->|"C. Return FaceId + Confidence + BoundingBox"| API
+    API -->|"D. Query Profile by FaceId"| DDB
+    API -->|"E. Sign Temporary Mugshot URL"| Signer
+    Signer -->|"Fetch Presigned Token"| S3
+    API -->|"F. Dispatch Scan Event"| AuditEngine
+    API -->|"G. Payload: {Match, Coordinates, Profile, MugshotUrl}"| UI_Scan
+
+    %% Data Views
+    UI_Audit <-->|"Query Scan History"| API
+    UI_DB <-->|"Query All Suspects & Vault Photos"| API
+```
+
+---
+
+### 🔄 Architectural Workflows Explained
+
+#### 1. Ingestion & Vectorization Pipeline (Enrollment Phase)
+```
+[Suspect Mugshot] ──► [FastAPI / S3 Vault] ──► [AWS Lambda] ──► [Amazon Rekognition] ──► [Amazon DynamoDB]
+```
+1. **Photo Upload**: An investigator enters a suspect's full name, offense category, wanted status, and attaches a front-facing mugshot via the Registration Portal.
+2. **Encrypted Storage**: The photo is uploaded to private Amazon S3 storage (`s3://crimevision-mugshots-bucket-unique/criminals/`) with custom metadata tags.
+3. **Serverless Event Trigger**: S3 automatically publishes an `s3:ObjectCreated:*` event to AWS Lambda.
+4. **Deep-Learning Vector Extraction**: AWS Lambda forwards the image bytes to Amazon Rekognition (`IndexFaces`). Rekognition extracts a 128-dimensional facial feature vector, stores the biometric vector in `criminal_collection`, and returns a unique `FaceId` (e.g. `d71c8282-35a1-...`).
+5. **NoSQL Metadata Binding**: Lambda writes the suspect record to Amazon DynamoDB (`criminal_records` table) using `RekognitionId` as the Primary Partition Key (`HASH`).
+
+#### 2. Real-Time Biometric Surveillance Pipeline (Identification Phase)
+```
+[Live Webcam / Upload] ──► [FastAPI Engine] ──► [Rekognition Search] ──► [DynamoDB Lookup] ──► [Visualizer UI]
+```
+1. **Frame Capture**: A webcam snapshot or surveillance photograph is captured and dispatched to `/api/recognize`.
+2. **Biometric Similarity Search**: FastAPI invokes Amazon Rekognition (`SearchFacesByImage`) with an 80%+ similarity threshold.
+3. **Bounding Box Coordinates**: Rekognition computes normalized relative spatial coordinates (`Left`, `Top`, `Width`, `Height`) and returns the matched `FaceId`.
+4. **Profile Hydration**: FastAPI performs a millisecond-latency key lookup in Amazon DynamoDB (`table.get_item(Key={'RekognitionId': face_id})`).
+5. **Cryptographic S3 Presigning**: FastAPI generates an ephemeral AWS Presigned URL (1-hour validity) for the suspect's original mugshot so the browser can securely display the database photo without making the S3 bucket public.
+6. **Canvas Overlay Rendering**: The Next.js frontend renders dynamic bounding boxes, match confidence gauges, and side-by-side verification cards.
+
+---
+
+### 🛡️ Component Roles & Cloud Matrix
+
+| Layer | Component | Cloud Service | Purpose & Responsibility |
+| :--- | :--- | :--- | :--- |
+| **Presentation** | Next.js 16 / React 19 | Client-Side SPA | Real-time webcam streaming, dynamic canvas bounding boxes, CSV audit downloads. |
+| **Application Gateway** | FastAPI / Uvicorn | Python REST Engine | Request validation, biometric coordinate normalization, presigned URL signing. |
+| **Biometric Store** | Amazon Rekognition | AWS AI/ML Vector DB | Facial detection, feature extraction, and high-dimensional cosine similarity matching. |
+| **Suspect Metadata** | Amazon DynamoDB | AWS Managed NoSQL | Sub-10ms key-value store mapping `RekognitionId` to suspect profiles and criminal history. |
+| **Mugshot Vault** | Amazon S3 | AWS Object Storage | Encrypted, versioned cloud storage for high-resolution suspect photos. |
+| **Event Processor** | AWS Lambda | AWS Serverless Compute | Event-driven worker that automatically indexes any mugshot uploaded to S3. |
+
+---
+
 ## 🌟 Key Features
 
 * **📷 Dual-Mode Biometric Scanner**: Real-time live webcam snapshot capture and high-resolution photo file upload.
@@ -22,41 +117,6 @@
 * **🗄️ Suspect Database Gallery**: Interactive digital mugshot vault querying DynamoDB records and displaying active status badges (`WANTED`, `CLEARED`, `UNDER INVESTIGATION`).
 * **📜 Surveillance Audit Logging & CSV Export**: Immutable tracking of every scan event (timestamp, suspect, status, confidence) with one-click official CSV export.
 * **🐳 Fully Dockerized**: Production-ready `Dockerfile` and `docker-compose.yml` for unified one-command execution.
-
----
-
-## 🏗️ System Architecture
-
-```mermaid
-flowchart TD
-    subgraph Client ["Frontend (Next.js 16 + Tailwind CSS)"]
-        UI["Live Scanner / Registration / Audit Logs"]
-    end
-
-    subgraph Backend ["API Layer (FastAPI)"]
-        API["FastAPI App (/api/recognize, /api/register, /api/audit-logs)"]
-    end
-
-    subgraph AWS ["Amazon Web Services (ap-south-1)"]
-        S3[("Amazon S3 Vault\n/criminals/*.jpg")]
-        Lambda["AWS Lambda Worker\n(Face Indexer)"]
-        Rekognition{{"Amazon Rekognition\n(Biometric Collection)"}}
-        DynamoDB[("Amazon DynamoDB\n(criminal_records)")]
-    end
-
-    UI -->|"1. Snap/Upload Photo"| API
-    API -->|"2. Biometric Vector Search"| Rekognition
-    Rekognition -->|"3. Match Confirmed (FaceId)"| API
-    API -->|"4. Lookup Criminal Profile"| DynamoDB
-    API -->|"5. Generate Presigned Mugshot URL"| S3
-    API -->|"6. Return Coordinates + Profile + Mugshot"| UI
-
-    UI -->|"Register New Suspect"| API
-    API -->|"Store Image with Metadata"| S3
-    S3 -.->|"ObjectCreated Trigger"| Lambda
-    Lambda -->|"Index Biometrics"| Rekognition
-    Lambda -->|"Write Record"| DynamoDB
-```
 
 ---
 
@@ -151,8 +211,9 @@ npm run dev
 
 ---
 
-## 🔒 Security Best Practices
+## 🔒 Security & Biometric Best Practices
 
-1. **Least-Privilege IAM**: AWS credentials require access strictly scoped to the `criminal_records` DynamoDB table, `criminal_collection` Rekognition collection, and `crimevision-mugshots-*` S3 bucket.
-2. **S3 Presigned URLs**: Biometric mugshot images are kept private in S3 with public access blocked. Mugshots are rendered in the UI via time-limited, cryptographically signed AWS Presigned URLs (expires in 1 hour).
-3. **Zero Secrets in Git**: Sensitive credentials are kept strictly in `.env` and excluded from version control via `.gitignore`.
+1. **Vector & PII Isolation**: Amazon Rekognition stores only numerical facial vector embeddings; personal identifiable information (PII) is isolated in DynamoDB and decrypted only on authorized match.
+2. **Ephemeral S3 Presigned URLs**: Biometric mugshots are kept private in S3 with all public access blocked. The frontend receives temporary, cryptographically signed URLs with a 1-hour expiration.
+3. **Zero Hardcoded Secrets**: Cloud keys are strictly injected via `.env` and environment variables, guarded by `.gitignore` and `.dockerignore`.
+4. **Least-Privilege IAM**: Execution roles and API users are scoped strictly to the `criminal_collection`, `crimevision-mugshots-*` bucket, and `criminal_records` table.
