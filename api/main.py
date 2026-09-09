@@ -77,13 +77,29 @@ def normalize_image_to_jpeg(raw_bytes: bytes) -> bytes:
     """
     try:
         img = Image.open(io.BytesIO(raw_bytes))
-        if img.mode != 'RGB':
+        original_format = img.format
+        print(f"[normalize] Detected format: {original_format}, mode: {img.mode}, size: {img.size}")
+
+        if img.mode in ('RGBA', 'LA', 'P'):
+            # Composite transparency onto white background before JPEG conversion
+            bg = Image.new('RGB', img.size, (255, 255, 255))
+            if img.mode == 'P':
+                img = img.convert('RGBA')
+            bg.paste(img, mask=img.split()[-1] if img.mode in ('RGBA', 'LA') else None)
+            img = bg
+        elif img.mode != 'RGB':
             img = img.convert('RGB')
+
         buf = io.BytesIO()
         img.save(buf, format='JPEG', quality=95)
-        return buf.getvalue()
+        jpeg_bytes = buf.getvalue()
+        print(f"[normalize] Converted to JPEG successfully, output size: {len(jpeg_bytes)} bytes")
+        return jpeg_bytes
     except Exception as e:
-        print(f"Notice: Image normalization fallback: {e}")
+        import traceback
+        print(f"[normalize] ERROR during image normalization: {e}")
+        traceback.print_exc()
+        # Return raw bytes as fallback — Rekognition will give a clearer error
         return raw_bytes
 
 @app.get("/api/health")
@@ -170,25 +186,30 @@ async def register_criminal(
     Normalizes any image format into JPEG to guarantee Rekognition compatibility.
     """
     raw_bytes = await file.read()
+    print(f"[register] Received file: {file.filename}, content_type: {file.content_type}, raw size: {len(raw_bytes)} bytes")
     image_bytes = normalize_image_to_jpeg(raw_bytes)
     safe_name = fullname.replace(" ", "_").lower()
     s3_key = f"criminals/{safe_name}.jpg"
     
     try:
         # 1. Upload to S3 with metadata
+        print(f"[register] Uploading to S3: bucket={BUCKET_NAME}, key={s3_key}")
         s3_client.put_object(
             Bucket=BUCKET_NAME,
             Key=s3_key,
             Body=image_bytes,
+            ContentType='image/jpeg',
             Metadata={
                 'fullname': fullname,
                 'crime': crime,
                 'status': status
             }
         )
+        print("[register] S3 upload successful.")
         
         # 2. Direct Indexing in Rekognition (Instant biometric extraction)
         external_id = safe_name.replace("-", "_")[:60]
+        print(f"[register] Indexing face in Rekognition: collection={COLLECTION_ID}, external_id={external_id}")
         rek_response = rekognition.index_faces(
             CollectionId=COLLECTION_ID,
             Image={'Bytes': image_bytes},
@@ -198,6 +219,7 @@ async def register_criminal(
         )
         
         face_records = rek_response.get('FaceRecords', [])
+        print(f"[register] Rekognition indexed {len(face_records)} face(s).")
         if not face_records:
             raise HTTPException(
                 status_code=400,
@@ -205,6 +227,7 @@ async def register_criminal(
             )
 
         face_id = face_records[0]['Face']['FaceId']
+        print(f"[register] Face ID: {face_id}")
         
         # 3. Store record in DynamoDB
         table.put_item(
@@ -217,6 +240,7 @@ async def register_criminal(
                 'CreatedAt': datetime.now(timezone.utc).isoformat()
             }
         )
+        print("[register] DynamoDB record saved successfully.")
 
         mugshot_url = generate_presigned_url(s3_key)
 
@@ -229,6 +253,9 @@ async def register_criminal(
     except HTTPException:
         raise
     except Exception as e:
+        import traceback
+        print(f"[register] FATAL ERROR: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/audit-logs")
