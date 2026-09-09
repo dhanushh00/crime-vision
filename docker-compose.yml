@@ -14,6 +14,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        - INTERNAL_API_URL=http://api:8000
     container_name: crimevision-frontend
     ports:
       - "3000:3000"
