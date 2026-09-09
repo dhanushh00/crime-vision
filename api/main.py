@@ -1,4 +1,7 @@
 import os
+import json
+import uuid
+from datetime import datetime, timezone
 import boto3
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,19 +12,19 @@ load_dotenv()
 
 app = FastAPI(title="CrimeVision API")
 
-# Allow our Next.js frontend (running on port 3000) to talk to this API
+# Allow Next.js frontend to talk to this API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # In production, restrict this to your frontend URL
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-BUCKET_NAME = "crimevision-mugshots-bucket-unique" # UPDATE THIS to your bucket name
-TABLE_NAME = "criminal_records"
-COLLECTION_ID = "criminal_collection"
+AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
+BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "crimevision-mugshots-bucket-unique")
+TABLE_NAME = os.getenv("DYNAMODB_TABLE", "criminal_records")
+COLLECTION_ID = os.getenv("REKOGNITION_COLLECTION", "criminal_collection")
 
 # Initialize Boto3 Clients
 rekognition = boto3.client('rekognition', region_name=AWS_REGION)
@@ -29,9 +32,49 @@ dynamodb = boto3.resource('dynamodb', region_name=AWS_REGION)
 s3_client = boto3.client('s3', region_name=AWS_REGION)
 table = dynamodb.Table(TABLE_NAME)
 
+AUDIT_LOG_FILE = os.path.join(os.path.dirname(__file__), "audit_logs.json")
+
+def load_audit_logs():
+    if os.path.exists(AUDIT_LOG_FILE):
+        try:
+            with open(AUDIT_LOG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def record_audit_log(entry: dict):
+    logs = load_audit_logs()
+    logs.insert(0, entry) # Most recent first
+    # Keep last 500 records
+    logs = logs[:500]
+    try:
+        with open(AUDIT_LOG_FILE, "w", encoding="utf-8") as f:
+            json.dump(logs, f, indent=2)
+    except Exception as e:
+        print(f"Error saving audit log: {e}")
+
+def generate_presigned_url(s3_key: str, expires_in: int = 3600) -> str:
+    """Generates a secure temporary presigned URL to view mugshots directly from S3."""
+    if not s3_key:
+        return ""
+    try:
+        return s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': BUCKET_NAME, 'Key': s3_key},
+            ExpiresIn=expires_in
+        )
+    except Exception as e:
+        print(f"Presigned URL generation error: {e}")
+        return ""
+
+@app.get("/api/health")
+def health_check():
+    return {"status": "healthy", "service": "CrimeVision API", "region": AWS_REGION}
+
 @app.post("/api/recognize")
 async def recognize_face(file: UploadFile = File(...)):
-    """Receives a webcam snapshot and searches AWS Rekognition."""
+    """Receives a webcam snapshot / image and searches AWS Rekognition collection."""
     image_bytes = await file.read()
     
     try:
@@ -40,29 +83,58 @@ async def recognize_face(file: UploadFile = File(...)):
             CollectionId=COLLECTION_ID,
             Image={'Bytes': image_bytes},
             MaxFaces=1,
-            FaceMatchThreshold=80.0 # 80% confidence threshold
+            FaceMatchThreshold=80.0
         )
         
         if not response.get('FaceMatches'):
+            # Record audit log for unidentified scan
+            record_audit_log({
+                "id": str(uuid.uuid4())[:8],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "match": False,
+                "fullname": "Unidentified Individual",
+                "crime": "None",
+                "status": "CLEAR / NO MATCH",
+                "confidence": 0,
+                "mugshot_url": ""
+            })
             return {"match": False, "message": "No match found in the database."}
             
         match = response['FaceMatches'][0]
         face_id = match['Face']['FaceId']
-        confidence = match['Similarity']
+        confidence = round(match['Similarity'], 2)
         bounding_box = match['Face']['BoundingBox']
         
         # 2. Fetch the criminal's metadata from DynamoDB using the FaceId
         db_response = table.get_item(Key={'RekognitionId': face_id})
         
         if 'Item' in db_response:
+            item = db_response['Item']
+            s3_key = item.get('S3Key', '')
+            mugshot_url = generate_presigned_url(s3_key)
+            
+            # Record audit log for confirmed match
+            record_audit_log({
+                "id": str(uuid.uuid4())[:8],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "match": True,
+                "fullname": item.get('FullName', 'Unknown'),
+                "crime": item.get('CrimeType', 'Unspecified'),
+                "status": item.get('WantedStatus', 'UNKNOWN'),
+                "confidence": confidence,
+                "mugshot_url": mugshot_url,
+                "face_id": face_id
+            })
+
             return {
                 "match": True,
-                "confidence": round(confidence, 2),
+                "confidence": confidence,
                 "bounding_box": bounding_box,
-                "criminal_data": db_response['Item']
+                "criminal_data": item,
+                "mugshot_url": mugshot_url
             }
         else:
-            return {"match": True, "message": "Face matched, but metadata is missing."}
+            return {"match": True, "confidence": confidence, "message": "Face matched, but profile metadata is missing."}
             
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -74,22 +146,88 @@ async def register_criminal(
     status: str = Form(...),
     file: UploadFile = File(...)
 ):
-    """Uploads a new mugshot to S3, triggering the Lambda function."""
-    file_extension = file.filename.split(".")[-1]
+    """
+    Uploads a new mugshot to S3 and performs direct indexing into AWS Rekognition & DynamoDB.
+    Ensures instant cloud registration even before AWS Lambda event triggers.
+    """
+    image_bytes = await file.read()
+    file_extension = file.filename.split(".")[-1] if "." in file.filename else "jpg"
     safe_name = fullname.replace(" ", "_").lower()
     s3_key = f"criminals/{safe_name}.{file_extension}"
     
     try:
+        # 1. Upload to S3 with metadata
         s3_client.put_object(
             Bucket=BUCKET_NAME,
             Key=s3_key,
-            Body=await file.read(),
+            Body=image_bytes,
             Metadata={
                 'fullname': fullname,
                 'crime': crime,
                 'status': status
             }
         )
-        return {"status": "success", "message": f"Successfully uploaded {fullname}. AWS Lambda is indexing it now!"}
+        
+        # 2. Direct Indexing in Rekognition (Instant biometric extraction)
+        external_id = safe_name.replace("-", "_")[:60]
+        rek_response = rekognition.index_faces(
+            CollectionId=COLLECTION_ID,
+            Image={'Bytes': image_bytes},
+            ExternalImageId=external_id,
+            MaxFaces=1,
+            QualityFilter="AUTO"
+        )
+        
+        face_records = rek_response.get('FaceRecords', [])
+        face_id = face_records[0]['Face']['FaceId'] if face_records else "NO_FACE_DETECTED"
+        
+        # 3. Store record in DynamoDB
+        if face_id != "NO_FACE_DETECTED":
+            table.put_item(
+                Item={
+                    'RekognitionId': face_id,
+                    'FullName': fullname,
+                    'CrimeType': crime,
+                    'WantedStatus': status,
+                    'S3Key': s3_key,
+                    'CreatedAt': datetime.now(timezone.utc).isoformat()
+                }
+            )
+
+        mugshot_url = generate_presigned_url(s3_key)
+
+        return {
+            "status": "success",
+            "message": f"Successfully indexed {fullname} into CrimeVision cloud!",
+            "face_id": face_id,
+            "mugshot_url": mugshot_url
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/audit-logs")
+def get_audit_logs():
+    """Returns all past surveillance scan audit events."""
+    return {"logs": load_audit_logs()}
+
+@app.get("/api/suspects")
+def list_suspects():
+    """Returns all registered criminal records from DynamoDB with presigned mugshot URLs."""
+    try:
+        response = table.scan()
+        items = response.get('Items', [])
+        for item in items:
+            item['MugshotUrl'] = generate_presigned_url(item.get('S3Key', ''))
+        return {"suspects": items}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/audit-logs")
+def clear_audit_logs():
+    """Clears the surveillance scan audit logs."""
+    try:
+        with open(AUDIT_LOG_FILE, "w", encoding="utf-8") as f:
+            json.dump([], f)
+        return {"status": "success", "message": "Audit logs cleared."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

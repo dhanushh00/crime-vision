@@ -1,7 +1,7 @@
 "use client";
 import React, { useRef, useState, useCallback } from "react";
 import Webcam from "react-webcam";
-import { ScanFace, AlertTriangle, CheckCircle, Camera, Upload, RotateCcw } from "lucide-react";
+import { ScanFace, AlertTriangle, CheckCircle, Camera, Upload, RotateCcw, ShieldAlert, UserCheck } from "lucide-react";
 
 export default function ScannerPage() {
   const webcamRef = useRef<Webcam>(null);
@@ -79,7 +79,7 @@ export default function ScannerPage() {
   return (
     <div className="flex flex-col gap-6 mt-4">
       {/* Mode Switcher */}
-      <div className="flex items-center justify-between bg-gray-900 p-3 rounded-lg border border-gray-800">
+      <div className="flex items-center justify-between bg-gray-900 p-3 rounded-lg border border-gray-800 shadow">
         <div className="flex gap-2">
           <button
             onClick={() => { setMode("webcam"); resetScanner(); }}
@@ -194,7 +194,9 @@ export default function ScannerPage() {
 
         {/* Right: Analysis & Profile Card */}
         <div className="flex-1 bg-gray-900 p-6 rounded-xl border border-gray-800 shadow-xl flex flex-col">
-          <h2 className="text-xl font-bold mb-4 border-b border-gray-700 pb-2">Biometric Analysis</h2>
+          <h2 className="text-xl font-bold mb-4 border-b border-gray-700 pb-2 flex items-center gap-2">
+            <ScanFace size={20} className="text-red-500" /> Biometric Analysis
+          </h2>
 
           {!result && (
             <div className="text-gray-500 flex-1 flex flex-col items-center justify-center h-64">
@@ -219,9 +221,37 @@ export default function ScannerPage() {
 
           {result && result.match && result.criminal_data && (
             <div className="bg-red-950/40 border border-red-800/80 p-5 rounded-lg flex flex-col gap-4">
-              <div className="flex items-center gap-2 text-red-400 font-bold tracking-wider uppercase text-sm border-b border-red-900/50 pb-2">
-                <AlertTriangle size={18} /> Biometric Match Confirmed
+              <div className="flex items-center justify-between border-b border-red-900/50 pb-2">
+                <div className="flex items-center gap-2 text-red-400 font-bold tracking-wider uppercase text-sm">
+                  <ShieldAlert size={18} /> Biometric Match Confirmed
+                </div>
+                <span className="font-mono text-xs font-bold text-green-400 bg-green-950/80 px-2 py-0.5 rounded border border-green-800">
+                  {result.confidence}% Match
+                </span>
               </div>
+
+              {/* Side-by-side Official Mugshot vs Live Scan */}
+              {result.mugshot_url && (
+                <div className="flex items-center gap-4 bg-gray-950 p-3 rounded-lg border border-red-900/50">
+                  <div className="relative w-24 h-24 rounded-md overflow-hidden border border-red-500/60 flex-shrink-0 bg-black">
+                    <img
+                      src={result.mugshot_url}
+                      alt={result.criminal_data.FullName}
+                      className="w-full h-full object-cover"
+                    />
+                    <span className="absolute bottom-0 inset-x-0 bg-black/80 text-[8px] font-bold text-center text-gray-300 uppercase py-0.5">
+                      DATABASE FILE
+                    </span>
+                  </div>
+                  <div className="text-xs text-gray-400">
+                    <p className="font-bold text-white text-sm">Official Record Mugshot</p>
+                    <p className="text-[11px] text-gray-500 mt-0.5">Matched from Amazon S3 mugshot vault</p>
+                    <div className="flex items-center gap-1 text-[11px] text-green-400 font-mono mt-1.5">
+                      <UserCheck size={13} /> Biometric Verification Verified
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
@@ -230,13 +260,15 @@ export default function ScannerPage() {
                 </div>
                 <div>
                   <span className="text-xs text-gray-400 uppercase tracking-wide">Wanted Status</span>
-                  <span className={`inline-block px-2.5 py-0.5 rounded text-xs font-bold uppercase mt-1 ${
-                    result.criminal_data.WantedStatus === "WANTED"
-                      ? "bg-red-600 text-white animate-pulse"
-                      : "bg-yellow-600 text-black"
-                  }`}>
-                    {result.criminal_data.WantedStatus}
-                  </span>
+                  <div>
+                    <span className={`inline-block px-2.5 py-0.5 rounded text-xs font-bold uppercase mt-1 ${
+                      result.criminal_data.WantedStatus === "WANTED"
+                        ? "bg-red-600 text-white animate-pulse"
+                        : "bg-yellow-600 text-black"
+                    }`}>
+                      {result.criminal_data.WantedStatus}
+                    </span>
+                  </div>
                 </div>
               </div>
 
@@ -245,12 +277,7 @@ export default function ScannerPage() {
                 <p className="text-md font-semibold text-gray-200">{result.criminal_data.CrimeType}</p>
               </div>
 
-              <div className="bg-gray-950 p-3 rounded border border-gray-800 flex justify-between items-center text-xs">
-                <span className="text-gray-400">Similarity Confidence</span>
-                <span className="font-mono font-bold text-green-400 text-sm">{result.confidence}%</span>
-              </div>
-
-              <div className="text-[11px] text-gray-500 font-mono">
+              <div className="text-[11px] text-gray-500 font-mono pt-2 border-t border-gray-800/80">
                 Rekognition ID: {result.criminal_data.RekognitionId}
               </div>
             </div>
