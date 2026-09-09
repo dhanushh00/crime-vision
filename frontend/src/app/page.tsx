@@ -1,14 +1,17 @@
 "use client";
 import React, { useRef, useState, useCallback } from "react";
 import Webcam from "react-webcam";
-import { ScanFace, AlertTriangle, CheckCircle } from "lucide-react";
+import { ScanFace, AlertTriangle, CheckCircle, Camera, Upload, RotateCcw } from "lucide-react";
 
 export default function ScannerPage() {
   const webcamRef = useRef<Webcam>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [mode, setMode] = useState<"webcam" | "upload">("webcam");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
 
-  // Helper function: Convert base64 webcam image to a File object
+  // Convert base64 data URL to File object
   const dataURLtoFile = (dataurl: string, filename: string) => {
     const arr = dataurl.split(",");
     const mime = arr[0].match(/:(.*?);/)![1];
@@ -21,20 +24,14 @@ export default function ScannerPage() {
     return new File([u8arr], filename, { type: mime });
   };
 
-  const captureAndScan = useCallback(async () => {
-    if (!webcamRef.current) return;
-    const imageSrc = webcamRef.current.getScreenshot();
-    if (!imageSrc) return;
-
+  const executeRecognition = async (file: File) => {
     setLoading(true);
     setResult(null);
 
-    const file = dataURLtoFile(imageSrc, "snapshot.jpg");
     const formData = new FormData();
     formData.append("file", file);
 
     try {
-      // Send to FastAPI backend
       const response = await fetch("http://127.0.0.1:8000/api/recognize", {
         method: "POST",
         body: formData,
@@ -47,77 +44,218 @@ export default function ScannerPage() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const captureAndScan = useCallback(async () => {
+    if (!webcamRef.current) return;
+    const imageSrc = webcamRef.current.getScreenshot();
+    if (!imageSrc) return;
+
+    setPreviewImage(imageSrc);
+    const file = dataURLtoFile(imageSrc, "snapshot.jpg");
+    await executeRecognition(file);
   }, [webcamRef]);
 
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async () => {
+      setPreviewImage(reader.result as string);
+      await executeRecognition(file);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const resetScanner = () => {
+    setPreviewImage(null);
+    setResult(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+  };
+
   return (
-    <div className="flex flex-col md:flex-row gap-8 mt-8">
-      <div className="flex-1 bg-gray-900 p-4 rounded-xl border border-gray-800 shadow-xl flex flex-col items-center">
-        <div className="relative w-full max-w-md overflow-hidden rounded-lg border-2 border-dashed border-gray-600 mb-6">
-          <Webcam
-            audio={false}
-            ref={webcamRef}
-            screenshotFormat="image/jpeg"
-            videoConstraints={{ facingMode: "user" }}
-            className="w-full"
-          />
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            {/* Visual target box overlay */}
-            <div className="w-48 h-48 border-2 border-red-500/50 rounded-lg"></div>
-          </div>
+    <div className="flex flex-col gap-6 mt-4">
+      {/* Mode Switcher */}
+      <div className="flex items-center justify-between bg-gray-900 p-3 rounded-lg border border-gray-800">
+        <div className="flex gap-2">
+          <button
+            onClick={() => { setMode("webcam"); resetScanner(); }}
+            className={`flex items-center gap-2 px-4 py-2 rounded-md font-medium text-sm transition-all ${
+              mode === "webcam" ? "bg-red-600 text-white" : "text-gray-400 hover:text-white hover:bg-gray-800"
+            }`}
+          >
+            <Camera size={16} /> Live Webcam
+          </button>
+          <button
+            onClick={() => { setMode("upload"); resetScanner(); }}
+            className={`flex items-center gap-2 px-4 py-2 rounded-md font-medium text-sm transition-all ${
+              mode === "upload" ? "bg-red-600 text-white" : "text-gray-400 hover:text-white hover:bg-gray-800"
+            }`}
+          >
+            <Upload size={16} /> Upload Photo
+          </button>
         </div>
-        
-        <button
-          onClick={captureAndScan}
-          disabled={loading}
-          className="w-full max-w-md bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded flex justify-center items-center gap-2 transition-all disabled:opacity-50"
-        >
-          <ScanFace size={20} />
-          {loading ? "Scanning Biometrics..." : "Scan & Identify"}
-        </button>
+
+        {previewImage && (
+          <button
+            onClick={resetScanner}
+            className="flex items-center gap-1 text-xs text-gray-400 hover:text-white bg-gray-800 px-3 py-1.5 rounded transition"
+          >
+            <RotateCcw size={14} /> Reset Scanner
+          </button>
+        )}
       </div>
 
-      <div className="flex-1 bg-gray-900 p-6 rounded-xl border border-gray-800 shadow-xl">
-        <h2 className="text-xl font-bold mb-4 border-b border-gray-700 pb-2">Analysis Results</h2>
-        
-        {!result && (
-          <div className="text-gray-500 flex flex-col items-center justify-center h-48">
-            <p>Awaiting biometric input...</p>
-          </div>
-        )}
+      <div className="flex flex-col md:flex-row gap-6">
+        {/* Left: Video / Image Viewport */}
+        <div className="flex-1 bg-gray-900 p-4 rounded-xl border border-gray-800 shadow-xl flex flex-col items-center">
+          <div className="relative w-full max-w-md aspect-[4/3] overflow-hidden rounded-lg border-2 border-dashed border-gray-700 bg-black flex items-center justify-center mb-4">
+            {previewImage ? (
+              <div className="relative w-full h-full flex items-center justify-center">
+                <img
+                  src={previewImage}
+                  alt="Captured Suspect"
+                  className="w-full h-full object-contain"
+                />
 
-        {result && !result.match && (
-          <div className="bg-green-900/30 border border-green-800 text-green-400 p-4 rounded-lg flex items-start gap-3">
-            <CheckCircle className="mt-1" size={24} />
-            <div>
-              <h3 className="font-bold text-lg">No Match Found</h3>
-              <p className="text-sm opacity-80">{result.message}</p>
+                {/* Dynamic Rekognition Bounding Box */}
+                {result?.match && result?.bounding_box && (
+                  <div
+                    className="absolute border-2 border-red-500 rounded shadow-lg pointer-events-none transition-all duration-300 animate-pulse"
+                    style={{
+                      left: `${result.bounding_box.Left * 100}%`,
+                      top: `${result.bounding_box.Top * 100}%`,
+                      width: `${result.bounding_box.Width * 100}%`,
+                      height: `${result.bounding_box.Height * 100}%`,
+                    }}
+                  >
+                    <div className="absolute -top-6 left-0 bg-red-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded shadow">
+                      {result.criminal_data?.FullName || "MATCH"} ({result.confidence}%)
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : mode === "webcam" ? (
+              <div className="relative w-full h-full">
+                <Webcam
+                  audio={false}
+                  ref={webcamRef}
+                  screenshotFormat="image/jpeg"
+                  videoConstraints={{ facingMode: "user" }}
+                  className="w-full h-full object-cover"
+                />
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <div className="w-48 h-48 border-2 border-red-500/40 rounded-lg"></div>
+                </div>
+              </div>
+            ) : (
+              <div
+                onClick={() => fileInputRef.current?.click()}
+                className="flex flex-col items-center justify-center cursor-pointer p-8 text-center text-gray-400 hover:text-white"
+              >
+                <Upload size={40} className="mb-2 text-red-500" />
+                <p className="text-sm font-medium">Click to select an image from your computer</p>
+                <p className="text-xs text-gray-500 mt-1">JPEG, PNG, WEBP</p>
+              </div>
+            )}
+          </div>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            onChange={handleFileUpload}
+            className="hidden"
+          />
+
+          {mode === "webcam" && !previewImage && (
+            <button
+              onClick={captureAndScan}
+              disabled={loading}
+              className="w-full max-w-md bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded flex justify-center items-center gap-2 transition-all disabled:opacity-50"
+            >
+              <ScanFace size={20} />
+              {loading ? "Scanning Biometrics..." : "Snap & Identify"}
+            </button>
+          )}
+
+          {mode === "upload" && !previewImage && (
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="w-full max-w-md bg-gray-800 hover:bg-gray-700 text-white font-semibold py-3 px-6 rounded flex justify-center items-center gap-2 transition-all"
+            >
+              <Upload size={18} /> Select Photo File
+            </button>
+          )}
+        </div>
+
+        {/* Right: Analysis & Profile Card */}
+        <div className="flex-1 bg-gray-900 p-6 rounded-xl border border-gray-800 shadow-xl flex flex-col">
+          <h2 className="text-xl font-bold mb-4 border-b border-gray-700 pb-2">Biometric Analysis</h2>
+
+          {!result && (
+            <div className="text-gray-500 flex-1 flex flex-col items-center justify-center h-64">
+              <ScanFace size={48} className="text-gray-700 mb-3 animate-pulse" />
+              <p className="text-sm">Awaiting biometric capture...</p>
+              <p className="text-xs text-gray-600 mt-1">Take a webcam snapshot or upload an image to scan</p>
             </div>
-          </div>
-        )}
+          )}
 
-        {result && result.match && result.criminal_data && (
-          <div className="bg-red-900/30 border border-red-800 text-red-400 p-4 rounded-lg flex items-start gap-3">
-            <AlertTriangle className="mt-1" size={24} />
-            <div className="w-full">
-              <h3 className="font-bold text-xl uppercase tracking-wider mb-2">Match Confirmed</h3>
-              <div className="bg-gray-950 p-4 rounded mt-2 border border-red-900/50">
-                <p className="text-sm text-gray-400">Identity</p>
-                <p className="text-lg font-bold text-white mb-2">{result.criminal_data.FullName}</p>
-                
-                <p className="text-sm text-gray-400">Offense Category</p>
-                <p className="text-md text-white mb-2">{result.criminal_data.CrimeType}</p>
-                
-                <p className="text-sm text-gray-400">Current Status</p>
-                <p className="text-md font-bold text-red-500 uppercase">{result.criminal_data.WantedStatus}</p>
-                
-                <div className="mt-4 pt-4 border-t border-gray-800 flex justify-between">
-                  <span className="text-xs text-gray-500">Confidence Score</span>
-                  <span className="text-xs font-mono text-green-400">{result.confidence}%</span>
+          {result && !result.match && (
+            <div className="bg-green-900/20 border border-green-800 text-green-400 p-5 rounded-lg flex items-start gap-3">
+              <CheckCircle className="mt-0.5" size={24} />
+              <div>
+                <h3 className="font-bold text-lg">No Criminal Record Found</h3>
+                <p className="text-sm text-gray-300 mt-1">{result.message}</p>
+                <div className="mt-3 text-xs text-green-500 font-mono">
+                  AWS Rekognition Status: 0 matches above threshold (80%)
                 </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
+
+          {result && result.match && result.criminal_data && (
+            <div className="bg-red-950/40 border border-red-800/80 p-5 rounded-lg flex flex-col gap-4">
+              <div className="flex items-center gap-2 text-red-400 font-bold tracking-wider uppercase text-sm border-b border-red-900/50 pb-2">
+                <AlertTriangle size={18} /> Biometric Match Confirmed
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <span className="text-xs text-gray-400 uppercase tracking-wide">Full Name</span>
+                  <p className="text-xl font-extrabold text-white">{result.criminal_data.FullName}</p>
+                </div>
+                <div>
+                  <span className="text-xs text-gray-400 uppercase tracking-wide">Wanted Status</span>
+                  <span className={`inline-block px-2.5 py-0.5 rounded text-xs font-bold uppercase mt-1 ${
+                    result.criminal_data.WantedStatus === "WANTED"
+                      ? "bg-red-600 text-white animate-pulse"
+                      : "bg-yellow-600 text-black"
+                  }`}>
+                    {result.criminal_data.WantedStatus}
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <span className="text-xs text-gray-400 uppercase tracking-wide">Offense Category</span>
+                <p className="text-md font-semibold text-gray-200">{result.criminal_data.CrimeType}</p>
+              </div>
+
+              <div className="bg-gray-950 p-3 rounded border border-gray-800 flex justify-between items-center text-xs">
+                <span className="text-gray-400">Similarity Confidence</span>
+                <span className="font-mono font-bold text-green-400 text-sm">{result.confidence}%</span>
+              </div>
+
+              <div className="text-[11px] text-gray-500 font-mono">
+                Rekognition ID: {result.criminal_data.RekognitionId}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
