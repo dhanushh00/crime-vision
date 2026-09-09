@@ -1,8 +1,10 @@
 import os
+import io
 import json
 import uuid
 from datetime import datetime, timezone
 import boto3
+from PIL import Image
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
@@ -68,6 +70,22 @@ def generate_presigned_url(s3_key: str, expires_in: int = 3600) -> str:
         print(f"Presigned URL generation error: {e}")
         return ""
 
+def normalize_image_to_jpeg(raw_bytes: bytes) -> bytes:
+    """
+    Converts any uploaded image (WEBP, AVIF, PNG, GIF, BMP, etc.)
+    to a standard RGB JPEG, preventing Rekognition InvalidImageFormatException.
+    """
+    try:
+        img = Image.open(io.BytesIO(raw_bytes))
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        buf = io.BytesIO()
+        img.save(buf, format='JPEG', quality=95)
+        return buf.getvalue()
+    except Exception as e:
+        print(f"Notice: Image normalization fallback: {e}")
+        return raw_bytes
+
 @app.get("/api/health")
 def health_check():
     return {"status": "healthy", "service": "CrimeVision API", "region": AWS_REGION}
@@ -75,7 +93,8 @@ def health_check():
 @app.post("/api/recognize")
 async def recognize_face(file: UploadFile = File(...)):
     """Receives a webcam snapshot / image and searches AWS Rekognition collection."""
-    image_bytes = await file.read()
+    raw_bytes = await file.read()
+    image_bytes = normalize_image_to_jpeg(raw_bytes)
     
     try:
         # 1. Search the Rekognition Collection
@@ -148,12 +167,12 @@ async def register_criminal(
 ):
     """
     Uploads a new mugshot to S3 and performs direct indexing into AWS Rekognition & DynamoDB.
-    Ensures instant cloud registration even before AWS Lambda event triggers.
+    Normalizes any image format into JPEG to guarantee Rekognition compatibility.
     """
-    image_bytes = await file.read()
-    file_extension = file.filename.split(".")[-1] if "." in file.filename else "jpg"
+    raw_bytes = await file.read()
+    image_bytes = normalize_image_to_jpeg(raw_bytes)
     safe_name = fullname.replace(" ", "_").lower()
-    s3_key = f"criminals/{safe_name}.{file_extension}"
+    s3_key = f"criminals/{safe_name}.jpg"
     
     try:
         # 1. Upload to S3 with metadata
@@ -179,20 +198,25 @@ async def register_criminal(
         )
         
         face_records = rek_response.get('FaceRecords', [])
-        face_id = face_records[0]['Face']['FaceId'] if face_records else "NO_FACE_DETECTED"
+        if not face_records:
+            raise HTTPException(
+                status_code=400,
+                detail="AWS Rekognition could not detect a clear face in this image. Please upload a clear front-facing portrait."
+            )
+
+        face_id = face_records[0]['Face']['FaceId']
         
         # 3. Store record in DynamoDB
-        if face_id != "NO_FACE_DETECTED":
-            table.put_item(
-                Item={
-                    'RekognitionId': face_id,
-                    'FullName': fullname,
-                    'CrimeType': crime,
-                    'WantedStatus': status,
-                    'S3Key': s3_key,
-                    'CreatedAt': datetime.now(timezone.utc).isoformat()
-                }
-            )
+        table.put_item(
+            Item={
+                'RekognitionId': face_id,
+                'FullName': fullname,
+                'CrimeType': crime,
+                'WantedStatus': status,
+                'S3Key': s3_key,
+                'CreatedAt': datetime.now(timezone.utc).isoformat()
+            }
+        )
 
         mugshot_url = generate_presigned_url(s3_key)
 
@@ -202,6 +226,8 @@ async def register_criminal(
             "face_id": face_id,
             "mugshot_url": mugshot_url
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
